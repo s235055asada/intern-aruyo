@@ -3,12 +3,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import math
 import os
+import queue
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -38,6 +41,9 @@ DEFAULT_GBRAIN_QUERY_CACHE_PATH = (
     Path(__file__).parent / ".cache" / "gbrain_queries.json"
 )
 _LOCAL_EMBEDDING_MODEL_INSTANCE = None
+_PARALLEL_GBRAIN_SLOT = threading.BoundedSemaphore(1)
+_GBRAIN_CACHE_LOCK = threading.Lock()
+SEARCH_LOGGER = logging.getLogger("hermes.search")
 
 
 @dataclass(frozen=True)
@@ -1102,7 +1108,7 @@ def retrieve_gbrain(
     chunks: list[DocumentChunk],
     limit: int = 6,
     gbrain_home: Path = DEFAULT_GBRAIN_HOME,
-    timeout_seconds: int = 30,
+    timeout_seconds: float = 30,
     query_cache_path: Path = DEFAULT_GBRAIN_QUERY_CACHE_PATH,
 ) -> list[DocumentChunk]:
     cache_key = gbrain_query_cache_key(question, chunks, limit)
@@ -1124,30 +1130,46 @@ def retrieve_gbrain(
         "--mode",
         "conservative",
     ]
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=environment,
+    )
     try:
-        process = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=environment,
-            timeout=timeout_seconds,
-            check=False,
-        )
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
     except subprocess.TimeoutExpired as exc:
+        if os.name == "nt":
+            # Bun launchers may create child processes holding the PGlite DB open.
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    capture_output=True, timeout=3, check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        if process.poll() is None:
+            process.kill()
+        try:
+            process.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
         raise RuntimeError(
             f"GBrain検索が{timeout_seconds}秒以内に完了しませんでした。"
         ) from exc
     if process.returncode != 0:
-        error = process.stderr.strip() or process.stdout.strip()
+        error = stderr.strip() or stdout.strip()
         raise RuntimeError(f"GBrain検索に失敗しました: {error}")
 
-    matched = gbrain_matches_from_output(process.stdout, chunks, limit)
+    matched = gbrain_matches_from_output(stdout, chunks, limit)
     if matched:
-        cache = load_gbrain_query_cache(query_cache_path)
-        cache[cache_key] = process.stdout
-        save_gbrain_query_cache(query_cache_path, cache)
+        with _GBRAIN_CACHE_LOCK:
+            cache = load_gbrain_query_cache(query_cache_path)
+            cache[cache_key] = stdout
+            save_gbrain_query_cache(query_cache_path, cache)
     return matched
 
 
@@ -1229,6 +1251,68 @@ def retrieve_enhanced(
     except RuntimeError:
         gbrain_results = []
 
+    return fuse_search_results(keyword_results, gbrain_results, chunks, limit)
+
+
+def retrieve_parallel(
+    question: str,
+    chunks: list[DocumentChunk],
+    limit: int = 6,
+    timeout_seconds: float = 2.5,
+    gbrain_home: Path | None = None,
+) -> list[DocumentChunk]:
+    if timeout_seconds < 0:
+        raise ValueError("GBrain待機時間は0以上で指定してください。")
+    started = time.monotonic()
+    deadline = started + timeout_seconds
+    completed: queue.Queue = queue.Queue(maxsize=1)
+    admitted = timeout_seconds > 0 and _PARALLEL_GBRAIN_SLOT.acquire(blocking=False)
+
+    def semantic_search() -> None:
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                completed.put(("timeout", []))
+                return
+            results = retrieve_gbrain(
+                question,
+                chunks,
+                max(limit * 2, 10),
+                gbrain_home=gbrain_home or Path(os.getenv("GBRAIN_HOME", str(DEFAULT_GBRAIN_HOME))),
+                timeout_seconds=remaining,
+            )
+            status = "used" if results else "no_match"
+            completed.put((status, results))
+        except Exception as exc:
+            # Exceptions may contain API credentials or external command output.
+            completed.put((f"unavailable:{type(exc).__name__}", []))
+        finally:
+            _PARALLEL_GBRAIN_SLOT.release()
+
+    if admitted:
+        threading.Thread(target=semantic_search, daemon=True, name="gbrain-search").start()
+    keyword_results = retrieve_keyword(question, chunks, max(limit * 4, 20))
+    status = "busy" if timeout_seconds else "disabled"
+    semantic_results: list[DocumentChunk] = []
+    if admitted:
+        try:
+            status, semantic_results = completed.get(timeout=max(0, deadline - time.monotonic()))
+            if time.monotonic() > deadline:
+                status, semantic_results = "timeout", []
+        except queue.Empty:
+            status = "timeout"
+    SEARCH_LOGGER.info("parallel gbrain=%s elapsed=%.3fs", status, time.monotonic() - started)
+    if not semantic_results:
+        return keyword_results[:limit]
+    return fuse_search_results(keyword_results, semantic_results, chunks, limit)
+
+
+def fuse_search_results(
+    keyword_results: list[DocumentChunk],
+    gbrain_results: list[DocumentChunk],
+    chunks: list[DocumentChunk],
+    limit: int,
+) -> list[DocumentChunk]:
     keyword_by_file: dict[Path, tuple[int, DocumentChunk]] = {}
     for chunk in keyword_results:
         if chunk.file_path not in keyword_by_file:
@@ -1277,7 +1361,7 @@ def retrieve_enhanced(
                 ),
             )
         )
-    fused.sort(key=lambda chunk: chunk.score, reverse=True)
+    fused.sort(key=lambda chunk: (-chunk.score, str(chunk.file_path), chunk.chunk_index))
     primary_file = keyword_results[0].file_path if keyword_results else None
     if len(gbrain_results) >= 2 and keyword_results:
         semantic_top = gbrain_results[0]
@@ -1319,6 +1403,7 @@ def retrieve(
     search_mode: str = "keyword",
     cache_path: Path = DEFAULT_EMBEDDING_CACHE_PATH,
     embedding_model: str = DEFAULT_EMBEDDING_MODEL,
+    gbrain_timeout: float = 2.5,
 ) -> list[DocumentChunk]:
     if search_mode == "keyword":
         results = retrieve_keyword(question, chunks, limit)
@@ -1328,6 +1413,8 @@ def retrieve(
         results = retrieve_gbrain(question, chunks, limit=limit)
     elif search_mode == "enhanced":
         results = retrieve_enhanced(question, chunks, limit=limit)
+    elif search_mode == "parallel":
+        results = retrieve_parallel(question, chunks, limit=limit, timeout_seconds=gbrain_timeout)
     elif search_mode == "hybrid":
         results = retrieve_hybrid(
             question,
@@ -2101,6 +2188,7 @@ def answer_question(
         search_mode=search_mode,
         cache_path=cache_path,
         embedding_model=embedding_model,
+        gbrain_timeout=min(2.5, max(0, deadline - time.monotonic() - 8)) if deadline else 2.5,
     )
     ambiguity_message = summary_ambiguity_message(question, contexts)
     if ambiguity_message is not None:
@@ -2486,7 +2574,7 @@ def main() -> None:
     parser.add_argument("--top-k", type=int, default=6, help="回答に使う検索結果数")
     parser.add_argument(
         "--search",
-        choices=["local", "hybrid", "keyword", "gbrain", "enhanced"],
+        choices=["local", "hybrid", "keyword", "gbrain", "enhanced", "parallel"],
         default="keyword",
         help=(
             "検索方式。keywordはBM25、gbrainはGBrain、enhancedは両者の順位融合、"

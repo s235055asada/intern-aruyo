@@ -1,5 +1,8 @@
 # intern-aruyo
 
+`20261117`ブランチでは、`--search parallel`によるBM25とGBrainの並行検索を検証しています。
+結果と制約は[並行検索の実験記録](./Hermes%20Agent型/GBRAIN_PARALLEL.md)を参照してください。
+
 会議ログの前処理、検索、根拠付き回答、Slack連携を行うコードです。
 「Hermes Agent型」は独自実装の名称で、外部のHermes Agent本体は使用していません。
 

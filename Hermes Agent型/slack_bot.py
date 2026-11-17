@@ -377,7 +377,7 @@ def main() -> None:
     parser.add_argument("--model", default=None)
     parser.add_argument(
         "--search",
-        choices=["local", "hybrid", "keyword", "gbrain", "enhanced"],
+        choices=["local", "hybrid", "keyword", "gbrain", "enhanced", "parallel"],
         default="keyword",
     )
     parser.add_argument("--top-k", type=int, default=6)

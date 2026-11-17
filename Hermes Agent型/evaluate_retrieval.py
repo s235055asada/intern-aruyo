@@ -126,6 +126,7 @@ def main() -> None:
             "hybrid",
             "gbrain",
             "enhanced",
+            "parallel",
             "both",
             "all",
         ],
