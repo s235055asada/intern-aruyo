@@ -1,0 +1,33 @@
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+credentials*.json
+client_secret*.json
+service-account*.json
+token*.json
+*.pem
+*.key
+目標*.txt
+
+# Meeting transcripts and private evaluation data
+/MD/
+/data/
+*.txt
+!requirements.txt
+Hermes Agent型/*_questions.json
+Hermes Agent型/*_report*.md
+
+# Runtime artifacts
+**/__pycache__/
+*.py[cod]
+**/.venv/
+venv/
+**/.cache/
+**/.gbrain/
+**/.logs/
+*.log
+*.pid
+node_modules/
+.DS_Store
+Thumbs.db
