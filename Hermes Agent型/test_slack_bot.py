@@ -29,7 +29,7 @@ class SlackTextTests(unittest.TestCase):
 
     def test_markdown_headings_are_converted_for_slack(self) -> None:
         self.assertEqual(
-            "*結論*\n回答です。[S1]",
+            "*結論*\n回答です。",
             format_slack_answer("## 結論\n回答です。[S1]"),
         )
 
@@ -39,13 +39,23 @@ class SlackTextTests(unittest.TestCase):
             "- [S1] オンボ-2.md / chunk 17: 実際の長い会話ログ原文"
         )
 
-        formatted = format_slack_answer(answer)
+        formatted = format_slack_answer(answer, include_sources=True)
 
         self.assertIn("回答です。[S1]", formatted)
         self.assertIn("*参照ファイル*", formatted)
         self.assertIn("- [S1] オンボ-2.md", formatted)
         self.assertNotIn("chunk 17", formatted)
         self.assertNotIn("会話ログ原文", formatted)
+
+    def test_sources_are_hidden_by_default_but_final_question_remains(self) -> None:
+        answer = "提案: 条件を整理してはどうでしょう。[S1]\n\n根拠:\n- [S1] meeting.txt / chunk 1: 非表示の原文\n\n確認: どの段階で困っていますか？"
+        formatted = format_slack_answer(answer)
+        self.assertIn("条件を整理してはどうでしょう。", formatted)
+        self.assertIn("どの段階で困っていますか？", formatted)
+        self.assertNotIn("meeting.txt", formatted)
+        self.assertNotIn("非表示の原文", formatted)
+        self.assertNotIn("[S1]", formatted)
+        self.assertNotIn("根拠:", formatted)
 
     def test_long_messages_are_split_without_data_loss(self) -> None:
         source = "段落1\n" + "あ" * 30 + "\n段落3"
@@ -83,6 +93,18 @@ class SlackTextTests(unittest.TestCase):
 
 
 class SlackBotTests(unittest.TestCase):
+    def test_source_question_returns_only_previous_answer_files_without_api(self) -> None:
+        raw_answer = "提案: 条件を整理してください。[S1]\n\n根拠:\n- [S1] meeting.txt / chunk 1: 原文\n"
+        self.bot.conversations.append("C1", "1", "相談", raw_answer)
+        result = self.bot.answer("どのファイルを参考にした？", "C1", "1")
+        self.assertIn("meeting.txt", result)
+        self.assertNotIn("chunk", result)
+        self.assertNotIn("原文", result)
+        self.assertEqual([], self.calls)
+        self.assertNotIn("meeting.txt", self.bot.answer("参照ファイルは？", "C1", "2"))
+        self.bot.answer("/clear", "C1", "1")
+        self.assertNotIn("meeting.txt", self.bot.answer("参照ファイルは？", "C1", "1"))
+
     def test_slow_generation_returns_within_wait_budget_without_storing_history(self) -> None:
         release = threading.Event()
         def slow_answerer(**kwargs) -> str:

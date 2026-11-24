@@ -38,7 +38,22 @@ def clean_slack_question(text: str, bot_user_id: str | None = None) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def format_slack_answer(answer: str) -> str:
+def referenced_files(answer: str) -> list[str]:
+    return list(dict.fromkeys(re.findall(
+        r"^- \[S\d+\]\s+(.+?)\s+/\s+chunk\s+\d+:",
+        answer, flags=re.MULTILINE,
+    )))
+
+
+def is_source_question(question: str) -> bool:
+    return any(term in question for term in (
+        "参照ファイル", "参考ファイル", "どのファイル", "どの資料", "出典",
+        "ソースは", "参考にしたファイル", "参考にした資料", "何を参考",
+        "根拠のファイル", "どこからの情報", "何を根拠", "参照元", "情報源", "どこに書",
+    ))
+
+
+def format_slack_answer(answer: str, include_sources: bool = False) -> str:
     lines = []
     for line in answer.splitlines():
         source = re.fullmatch(
@@ -46,11 +61,15 @@ def format_slack_answer(answer: str) -> str:
             line.strip(),
         )
         if source:
-            lines.append(f"- [{source.group(1)}] {source.group(2)}")
+            if include_sources:
+                lines.append(f"- [{source.group(1)}] {source.group(2)}")
             continue
-        if line.strip() == "根拠:":
-            lines.append("*参照ファイル*")
+        if line.strip() in {"根拠:", "## 根拠"}:
+            if include_sources:
+                lines.append("*参照ファイル*")
             continue
+        if not include_sources:
+            line = re.sub(r"\s*\[S\d+\]", "", line).rstrip()
         if line.startswith("会議での背景: "):
             line = line.removeprefix("会議での背景: ")
         elif line.startswith("参考にした考え方: "):
@@ -231,6 +250,13 @@ class SlackHermesBot:
                 "会議ログについて質問してください。最初はチャンネルでBotをメンションし、"
                 "続きは同じスレッドへ投稿してください。`/clear`で履歴を削除できます。"
             )
+        if is_source_question(question):
+            history = self.conversations.get(channel_id, thread_ts)
+            previous = next((message["content"] for message in reversed(history) if message["role"] == "assistant"), None)
+            sources = referenced_files(previous) if previous else []
+            if sources:
+                return "直前の回答で参考にしたファイルはこちらです。\n" + "\n".join(f"- {name}" for name in sources)
+            return "このスレッドでは、直前の回答の参照ファイルを確認できません。調べたい内容をもう一度質問してください。"
 
         started = time.monotonic()
         key = (channel_id, thread_ts)
