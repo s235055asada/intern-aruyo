@@ -53,6 +53,8 @@ def format_slack_answer(answer: str) -> str:
             continue
         if line.startswith("会議での背景: "):
             line = line.removeprefix("会議での背景: ")
+        elif line.startswith("参考にした考え方: "):
+            line = line.removeprefix("参考にした考え方: ")
         elif line.startswith("提案: "):
             line = line.removeprefix("提案: ")
         elif line.startswith("確認: "):

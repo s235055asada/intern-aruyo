@@ -466,6 +466,29 @@ class GeminiFallbackTests(unittest.TestCase):
 
 
 class AdviceTests(unittest.TestCase):
+    def test_advice_leads_with_current_action_then_past_decision_reasoning(self) -> None:
+        import json
+        evidence = "必須条件と入社後に育成できる条件を分けて検討している。"
+        contexts = [DocumentChunk(Path("meeting.txt"), 1, evidence, DocumentMetadata("定例", None, (), None))]
+        prompt = build_user_prompt("エンジニアの選考フローどうしたら", contexts, structured=False)
+        result = {
+            "proposals": [{
+                "text": "まず必須条件と育成できる条件を分けて比べてはどうでしょう。",
+                "background": "以前の会議では条件を分けて検討していました。今回も同じ軸で比べるとよさそうです。",
+                "evidence": evidence, "sources": ["S1"],
+            }], "supplement": "",
+        }
+        response = {"candidates": [{"content": {"parts": [{"text": json.dumps(result, ensure_ascii=False)}]}}]}
+        with (
+            patch("hermes_agent.get_gemini_api_key", return_value="test-key"),
+            patch("hermes_agent.post_gemini_json", return_value=response),
+        ):
+            answer = answer_with_gemini("system", prompt, "gemini-2.5-flash-lite")
+        self.assertTrue(answer.startswith("提案: まず必須条件"))
+        self.assertLess(answer.index("提案:"), answer.index("参考にした考え方:"))
+        self.assertIn("原文が検討や相談の段階", prompt)
+        self.assertNotIn("会議での背景:", answer)
+
     def test_evidence_must_match_transcript_despite_speaker_boundaries(self) -> None:
         from hermes_agent import evidence_quote_matches
         source = "選考担当者が単独で不合格を決めるのは難しいと話しています。\n担当者 06:00\n判断基準を共有したいという相談がありました。"
