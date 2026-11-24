@@ -1881,6 +1881,11 @@ def prepare_advice_search(
     return question, list(unique_chunks.values())
 
 
+def advice_evidence_text(text: str, source_index: int) -> str:
+    parts = [part.strip() for part in re.split(r"(?<=[。！？])|\n+", text) if part.strip()]
+    return "\n".join(f"[E{source_index}_{index}] {part}" for index, part in enumerate(parts, 1))
+
+
 def build_user_prompt(
     question: str,
     contexts: list[DocumentChunk],
@@ -1909,7 +1914,7 @@ def build_user_prompt(
             f"会議名: {chunk.metadata.meeting_name}\n"
             f"日付: {chunk.metadata.meeting_date or '不明'}\n"
             f"発言者: {', '.join(chunk.metadata.speakers) or '不明'}\n"
-            f"{chunk.text}"
+            f"{advice_evidence_text(chunk.text, index) if advice_mode or is_advice_question(question) else chunk.text}"
         )
         for index, chunk in enumerate(contexts, start=1)
     )
@@ -1964,7 +1969,8 @@ def build_user_prompt(
             "すぐ実行できる行動まで具体化してください。未実施の行動案は提案として書いてください。"
             "背景の主語と対象は原文を厳密に維持し、社員への対応を候補者対応へ読み替えないでください。"
             "原文にある現状の数値だけを理由に、選考基準を厳格化すべきと結論しないでください。"
-            "背景を直接裏付ける原文の短い一節をevidenceに格納してください。この一節は画面には表示しません。"
+            "背景を直接裏付ける[E1_1]形式の根拠区間IDをevidenceに格納してください。"
+            "原文を転記せず、提示されたIDだけを選び、sourcesもその区間のS番号に合わせてください。"
             "モデルの一般知識はsupplementに180〜250字程度で分離し、会議で言われたこととして扱わず、"
             "会議の引用IDは付けないでください。一般知識による方法や記入例を条件付きで示し、"
             "架空の担当者・会社の実績・成功率・決定済みの期限は作らないでください。"
@@ -2325,6 +2331,12 @@ def answer_with_gemini(
             r"\[(S\d+)\] \[source:[^\n]+\]\n(.*?)(?=\n\n\[S\d+\] \[source:|\n\n質問:|\Z)",
             user_prompt, flags=re.DOTALL,
         ))
+        evidence_sources = {
+            match.group(1): source_id
+            for source_id, source_text in source_texts.items()
+            for match in re.finditer(r"^\[(E(\d+)_\d+)\] .+", source_text, flags=re.MULTILINE)
+            if source_id == f"S{match.group(2)}"
+        }
         payload["generationConfig"].update({
             "responseMimeType": "application/json",
             "responseSchema": {
@@ -2345,7 +2357,8 @@ def answer_with_gemini(
                                 },
                                 "evidence": {
                                     "type": "STRING",
-                                    "description": "背景を直接示す原文の一節を改変せず20〜100文字程度で転記する。候補者と社員など主語・対象を変えない。",
+                                    "enum": list(evidence_sources),
+                                    "description": "背景を直接裏付ける提示済み根拠区間IDを選ぶ。原文を転記しない。",
                                 },
                                 "sources": {
                                     "type": "ARRAY",
@@ -2403,10 +2416,12 @@ def answer_with_gemini(
         for proposal in result_data.get("proposals", [])[:3]:
             sources = [source for source in proposal.get("sources", []) if source in source_ids]
             quote = proposal.get("evidence", "")
-            if not any(
-                evidence_quote_matches(quote, source_texts.get(source, ""))
-                for source in sources
-            ):
+            if evidence_sources:
+                selected_source = evidence_sources.get(quote)
+                if selected_source not in sources:
+                    continue
+                sources = [selected_source]
+            elif not any(evidence_quote_matches(quote, source_texts.get(source, "")) for source in sources):
                 continue
             citations = " ".join(f"[{source}]" for source in sources)
             if citations:

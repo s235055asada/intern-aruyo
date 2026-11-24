@@ -475,7 +475,7 @@ class AdviceTests(unittest.TestCase):
             "proposals": [{
                 "text": "まず必須条件と育成できる条件を分けて比べてはどうでしょう。",
                 "background": "以前の会議では条件を分けて検討していました。今回も同じ軸で比べるとよさそうです。",
-                "evidence": evidence, "sources": ["S1"],
+                "evidence": "E1_1", "sources": ["S1"],
             }], "supplement": "",
         }
         response = {"candidates": [{"content": {"parts": [{"text": json.dumps(result, ensure_ascii=False)}]}}]}
@@ -488,6 +488,14 @@ class AdviceTests(unittest.TestCase):
         self.assertLess(answer.index("提案:"), answer.index("参考にした考え方:"))
         self.assertIn("原文が検討や相談の段階", prompt)
         self.assertNotIn("会議での背景:", answer)
+        self.assertNotIn("E1_1", answer)
+        result["proposals"][0]["evidence"] = "E99_1"
+        response["candidates"][0]["content"]["parts"][0]["text"] = json.dumps(result, ensure_ascii=False)
+        with (
+            patch("hermes_agent.get_gemini_api_key", return_value="test-key"),
+            patch("hermes_agent.post_gemini_json", return_value=response),
+        ):
+            self.assertEqual("", answer_with_gemini("system", prompt, "gemini-2.5-flash-lite"))
 
     def test_evidence_must_match_transcript_despite_speaker_boundaries(self) -> None:
         from hermes_agent import evidence_quote_matches
