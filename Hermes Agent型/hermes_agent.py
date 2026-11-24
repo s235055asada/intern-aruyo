@@ -1881,6 +1881,14 @@ def prepare_advice_search(
     return question, list(unique_chunks.values())
 
 
+def wants_detailed_answer(question: str) -> bool:
+    if any(term in question for term in ("短く", "簡潔", "要点だけ")):
+        return False
+    return any(term in question for term in (
+        "詳しく", "詳細", "具体的", "手順", "例を", "例も", "掘り下げ", "もう少し", "もっと教えて", "どうやって",
+    ))
+
+
 def advice_evidence_text(text: str, source_index: int) -> str:
     parts = [part.strip() for part in re.split(r"(?<=[。！？])|\n+", text) if part.strip()]
     return "\n".join(f"[E{source_index}_{index}] {part}" for index, part in enumerate(parts, 1))
@@ -1943,8 +1951,10 @@ def build_user_prompt(
         )
     )
     if advice_mode or is_advice_question(question):
+        detailed = wants_detailed_answer(question)
         return (
             "回答モード: 相談\n"
+            f"回答の詳しさ: {'詳細' if detailed else '簡潔'}\n"
             "利用者は過去の決定事項の照会ではなく改善方法を相談しています。"
             "今回の進め方を先に勧め、その理由として過去の会議で何を比較し、何を重視して"
             "判断しようとしていたかを説明してください。過去の課題や決定事項の一覧を主役にしないでください。"
@@ -1962,24 +1972,22 @@ def build_user_prompt(
             "選考フローの相談は、選考の順序・判断基準・担当の分担・連絡導線に絞り、"
             "母集団形成や採用広報の話へ逸れないでください。"
             "採用全般の相談では、候補者像・求人条件・評価基準・候補者対応を優先してください。"
-            "目安として内容の7割を会議ログに基づく説明と提案、3割をモデルの一般知識による補足にしてください。"
-            "会議に基づく提案は最大3つ。重複させず、それぞれ『今回何をどう進めるとよさそうか』を先に、"
-            "『その理由となる過去の検討・判断の考え方』を後に、合わせて180〜220字程度で説明してください。"
+            f"{'今回は詳細を求められているため、最大3つの提案を600〜900字程度で、具体例と手順も交えて説明します。' if detailed else '今回は要点だけを150〜300字程度で答えます。提案は最大2つにし、長い前置きや同じ内容の言い換えを省きます。'}"
+            "『今回何をどう進めるとよさそうか』を先に、『理由となる過去の検討の考え方』を短く添えてください。"
             "抽象的な『基準を明確にする』だけでなく、比較する項目、作る資料、確認する手順など"
             "すぐ実行できる行動まで具体化してください。未実施の行動案は提案として書いてください。"
             "背景の主語と対象は原文を厳密に維持し、社員への対応を候補者対応へ読み替えないでください。"
             "原文にある現状の数値だけを理由に、選考基準を厳格化すべきと結論しないでください。"
             "背景を直接裏付ける[E1_1]形式の根拠区間IDをevidenceに格納してください。"
             "原文を転記せず、提示されたIDだけを選び、sourcesもその区間のS番号に合わせてください。"
-            "モデルの一般知識はsupplementに180〜250字程度で分離し、会議で言われたこととして扱わず、"
-            "会議の引用IDは付けないでください。一般知識による方法や記入例を条件付きで示し、"
+            "一般知識だけの独立した補足段落や、その前置きは不要です。"
+            "一般知識は具体的な行動案を考えるために使い、会議で実施された内容と混同しないでください。"
             "架空の担当者・会社の実績・成功率・決定済みの期限は作らないでください。"
             "会議で決まった事実と、あなたの提案を区別し、成果を保証しないでください。"
             "直接同じ相談への答えがなくても、根拠にある課題から条件付きの提案をして構いません。"
             "根拠にない人物・人数・日付・金額は補わないでください。"
             "確認質問はアプリ側で追加するので出力不要です。"
-            "会議の事実と、それに基づく提案には[S1]形式の引用を必須にし、全体を700〜1000字程度にしてください。"
-            "根拠が少ない場合は7対3に合わせて水増しせず、確認できる範囲だけ説明してください。\n\n"
+            "会議の事実と提案には[S1]形式の引用を必須にし、根拠が少ない場合は水増ししないでください。\n\n"
             f"会議ログ抜粋:\n{context_text}\n\n質問:\n{question}"
         )
     return (
@@ -2218,14 +2226,14 @@ def answer_question(
             "\n相談モードでは、会議ログに記載された事実を根拠にした条件付きの提案を許可する。"
             "『提案:』と『確認:』で事実と区別する。相談への直接回答が原文にないことだけを"
             "理由に拒否しない。会社の決定事項・実績を作らない。"
-            "一般知識による補足を全体の約3割まで許可し、会議の事実と分離する。"
+            "独立した一般知識の補足段落は付けない。"
             "一般的な方法や例は提案として説明し、会議で実施されたと断定しない。"
         )
     user_prompt = build_user_prompt(question, contexts, structured=structured, advice_mode=advice)
     if not structured:
         user_prompt += (
-            "\n回答は700〜1000字程度。会議の原文を長く引用せず、背景と具体策を説明してください。"
-            if advice else "\n回答は質問に必要な背景と具体的な手順を含めて説明してください。原文の長い引用は不要です。"
+            "\n具体例や手順を含めて詳しく説明してください。原文の長い引用は不要です。"
+            if wants_detailed_answer(question) else "\n回答は150〜300字程度で要点を先に話してください。詳しい説明や一般論の補足は求められたときだけにしてください。"
         )
 
     if provider == "gemini":
@@ -2325,6 +2333,7 @@ def answer_with_gemini(
         },
     }
     advice_output = "回答モード: 相談" in user_prompt
+    detailed_output = "回答の詳しさ: 詳細" in user_prompt
     if advice_output:
         source_ids = list(dict.fromkeys(re.findall(r"\[(S\d+)\] \[source:", user_prompt)))
         source_texts = dict(re.findall(
@@ -2344,16 +2353,17 @@ def answer_with_gemini(
                 "properties": {
                     "proposals": {
                         "type": "ARRAY",
+                        "maxItems": 3 if detailed_output else 2,
                         "items": {
                             "type": "OBJECT",
                             "properties": {
                                 "text": {
                                     "type": "STRING",
-                                    "description": "今回の相談への行動提案を先に話す。『まず〜してはどうでしょう』『例えば〜を比べるとよさそうです』と具体的な手順を勧める。過去の事実の羅列から始めない。100〜140文字程度。引用IDは含めない。",
+                                    "description": ("具体例や手順を含む行動提案を100〜150文字程度で。" if detailed_output else "行動提案を40〜70文字程度で簡潔に。") + "『まず〜してはどうでしょう』と自然に話し、過去の事実の羅列から始めない。引用IDは含めない。",
                                 },
                                 "background": {
                                     "type": "STRING",
-                                    "description": "この提案を勧める理由。過去の会議で何を比べ何を重視して検討したかを原文の範囲で説明し、その考え方が今回どう役立つかにつなぐ。未決を決定済みや成功例としない。判断経緯が不明なら明示し、確認できた課題だけを根拠にする。60〜100文字程度。引用IDは含めない。",
+                                    "description": ("過去の会議の判断方法を60〜100文字程度で説明。" if detailed_output else "提案の理由となる過去の会議の考え方を30〜60文字程度で短く添える。") + "未決を決定済みや成功例としない。判断経緯が不明なら確認できた課題だけを根拠にする。引用IDは含めない。",
                                 },
                                 "evidence": {
                                     "type": "STRING",
@@ -2368,12 +2378,8 @@ def answer_with_gemini(
                             "required": ["background", "evidence", "text", "sources"],
                         },
                     },
-                    "supplement": {
-                        "type": "STRING",
-                        "description": "会議ログによらない一般知識の補足。180〜250文字程度で具体的な方法や記入例を説明。会議の事実や決定事項と混同しない。引用ID・数値・人物名・成果保証は禁止。",
-                    },
                 },
-                "required": ["proposals", "supplement"],
+                "required": ["proposals"],
             },
         })
     def generate(selected_model: str) -> dict:
@@ -2413,7 +2419,7 @@ def answer_with_gemini(
     if advice_output:
         result_data = json.loads(result_text)
         lines = []
-        for proposal in result_data.get("proposals", [])[:3]:
+        for proposal in result_data.get("proposals", [])[:3 if detailed_output else 2]:
             sources = [source for source in proposal.get("sources", []) if source in source_ids]
             quote = proposal.get("evidence", "")
             if evidence_sources:
@@ -2433,18 +2439,6 @@ def answer_with_gemini(
                 if background:
                     lines.append(f"参考にした考え方: {background} {citations}")
                 lines.append("")
-        supplement = re.sub(r"\[S\d+\]", "", result_data.get("supplement", ""))
-        supplement = re.sub(r"\s+", " ", supplement).strip()
-        if len(supplement) > 300:
-            sentences = re.findall(r"[^。！？]+[。！？]", supplement)
-            selected = []
-            for sentence in sentences:
-                if sum(map(len, selected)) + len(sentence) > 300:
-                    break
-                selected.append(sentence)
-            supplement = "".join(selected)
-        if supplement:
-            lines.append(f"一般的な補足（会議ログ未確認）: {supplement}")
         return "\n".join(lines)
     return result_text
 

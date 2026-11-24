@@ -466,6 +466,17 @@ class GeminiFallbackTests(unittest.TestCase):
 
 
 class AdviceTests(unittest.TestCase):
+    def test_default_is_concise_and_detail_is_enabled_only_when_requested(self) -> None:
+        from hermes_agent import wants_detailed_answer
+        contexts = [DocumentChunk(Path("meeting.txt"), 1, "選考基準を共有する。", DocumentMetadata("定例", None, (), None))]
+        brief = build_user_prompt("エンジニアの選考フローどうしたら", contexts, structured=False)
+        detailed = build_user_prompt("具体的な手順を詳しく教えて", contexts, structured=False, advice_mode=True)
+        self.assertIn("回答の詳しさ: 簡潔", brief)
+        self.assertIn("150〜300字", brief)
+        self.assertIn("回答の詳しさ: 詳細", detailed)
+        self.assertTrue(wants_detailed_answer("具体例を教えて"))
+        self.assertFalse(wants_detailed_answer("具体的だけど短く教えて"))
+
     def test_advice_leads_with_current_action_then_past_decision_reasoning(self) -> None:
         import json
         evidence = "必須条件と入社後に育成できる条件を分けて検討している。"

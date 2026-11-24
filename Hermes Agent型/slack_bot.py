@@ -79,7 +79,7 @@ def format_slack_answer(answer: str, include_sources: bool = False) -> str:
         elif line.startswith("確認: "):
             line = line.removeprefix("確認: ")
         elif line.startswith("一般的な補足（会議ログ未確認）: "):
-            line = "ここからは会議で決まったことではなく、一般的な進め方の補足です。" + line.removeprefix("一般的な補足（会議ログ未確認）: ")
+            continue
         heading = re.fullmatch(r"##\s+(.+)", line.strip())
         if heading:
             title = "参照ファイル" if heading.group(1) == "根拠" else heading.group(1)

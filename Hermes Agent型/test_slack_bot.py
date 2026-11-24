@@ -19,6 +19,12 @@ from slack_bot import (
 
 
 class SlackTextTests(unittest.TestCase):
+    def test_general_supplement_paragraph_is_not_displayed(self) -> None:
+        formatted = format_slack_answer("提案: 条件をそろえてはどうでしょう。[S1]\n一般的な補足（会議ログ未確認）: 不要な一般論の段落。")
+        self.assertIn("条件をそろえてはどうでしょう。", formatted)
+        self.assertNotIn("一般的な補足", formatted)
+        self.assertNotIn("不要な一般論", formatted)
+
     def test_bot_mention_is_removed(self) -> None:
         self.assertEqual(
             "採用会議の決定事項は？",
